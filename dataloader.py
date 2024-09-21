@@ -17,6 +17,9 @@ class MSRS_data(Dataset):
         for sub_dir in dirname:
             temp_path = os.path.join(root_dir, sub_dir)
             if sub_dir == "Infrared":
+
+
+
                 self.inf_path = temp_path
             elif sub_dir == "Visible":
                 self.vis_path = temp_path
