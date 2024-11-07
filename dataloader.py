@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 from PIL import Image
 import os
 from torchvision import transforms
-from models.fusion_network import RGB2YCrCb
+from models.utlis import RGB2YCrCb
 
 
 to_tensor = transforms.Compose([transforms.ToTensor()])
