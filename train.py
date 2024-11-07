@@ -14,7 +14,8 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from loss import *
-from models.fusion_network import EdgeFusion, clamp, YCrCb2RGB
+from models.network_remake import LaSeFusion
+from models.utlis import clamp, RGB2YCrCb, YCrCb2RGB
 
 def init_seeds(seed=0):
     # Initialize random number generator (RNG) seeds https://pytorch.org/docs/stable/notes/randomness.html
@@ -29,7 +30,7 @@ def init_seeds(seed=0):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="LaSeFusion")
-    parser.add_argument('--dataset_path', metavar='DIR', default='datasets/MSRS',
+    parser.add_argument('--dataset_path', metavar='DIR', default='datasets/msrs_train',
                         help='path to dataset (default: imagenet)')
     parser.add_argument('-a', '--arch', metavar='ARCH', default='fusion_train',
                         choices=['fusion_train', 'fusion_test'])
@@ -40,7 +41,7 @@ if __name__ == '__main__':
                         help='number of total epochs to run')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
-    parser.add_argument('-b', '--batch_size', default=1, type=int,
+    parser.add_argument('-b', '--batch_size', default=2, type=int,
                         metavar='N',
                         help='mini-batch size (default: 256), this is the total '
                              'batch size of all GPUs on the current node when '
@@ -73,7 +74,7 @@ if __name__ == '__main__':
         os.makedirs(args.save_path)
 
     if args.arch == "fusion_train":
-        model = EdgeFusion()
+        model = LaSeFusion()
         if torch.cuda.is_available():
             model = model.cuda()
 
@@ -96,40 +97,26 @@ if __name__ == '__main__':
                 vis_y_image = vis_y_image.cuda()
                 inf_image = inf_image.cuda()
                 optimizer.zero_grad()
-                fused_image_edge, vis_y_image_e, final_fused_image = model(vis_y_image, inf_image)
+                fused_image, vis_y_image_enhanced = model(vis_y_image, inf_image)
 
                 # 强制约束范围在[0,1], 以免越界值使得最终生成的图像产生异常斑点
-                fused_image_edge = clamp(fused_image_edge)
-                final_fused_image = clamp(final_fused_image)
-                # vis_y_image_e = clamp(vis_y_image_e)
-
+                final_fused_image = clamp(fused_image)
 
                 # 强度损失
-                loss_aux_edge = F.l1_loss(fused_image_edge, torch.max(vis_y_image, inf_image))
-                loss_aux_re = F.l1_loss(final_fused_image, torch.max(vis_y_image_e, fused_image_edge))
+                loss_aux = F.l1_loss(fused_image, torch.max(vis_y_image, inf_image))
 
                 # 纹理损失
-                gradient_loss_edge = F.l1_loss(gradient(fused_image_edge), torch.max(vis_y_image, inf_image))
-                gradient_loss_re = F.l1_loss(gradient(final_fused_image), torch.max(vis_y_image_e, fused_image_edge))
-
-                # 初步边缘融合总损失
-                loss_total_edge = loss_aux_edge + gradient_loss_edge
-
-                # 纹理信息补充融合总损失
-                loss_total_supplement = loss_aux_re + gradient_loss_re
+                gradient_loss = F.l1_loss(gradient(fused_image), torch.max(gradient(vis_y_image), gradient(inf_image)))
 
                 # 光照重构损失
                 loss_rec_y = YChannelEnhancementLoss()
-                loss_rec = loss_rec_y(vis_y_image_e, vis_y_image)
-
-                # 语义分割损失
-                # 待添加
+                loss_rec = loss_rec_y(vis_y_image_enhanced, vis_y_image)
 
                 t1, t2, t3 = eval(args.loss_weight)
-                loss = t1 * loss_total_edge + t2 * loss_total_supplement + t3 * loss_rec
+                loss = t1 * loss_aux + t2 * gradient_loss + t3 * loss_rec
 
-                train_tqdm.set_postfix(epoch=epoch, loss_total_edge=t1 * loss_total_edge.item(),
-                                       loss_total_supplement=t2 * loss_total_supplement.item(),
+                train_tqdm.set_postfix(epoch=epoch, loss_aux=t1 * loss_aux.item(),
+                                       loss_gradient=t2 * gradient_loss.item(),
                                        loss_rec=loss_rec.item(), loss_total=loss.item())
                 loss.backward()
                 optimizer.step()

@@ -3,11 +3,37 @@ from torch import nn
 import torch.nn.functional as F
 
 def histogram_loss(enhanced_y, original_y, num_bins=256):
-    hist_enhanced = torch.histc(enhanced_y, bins=num_bins, min=0, max=1)
-    hist_original = torch.histc(original_y, bins=num_bins, min=0, max=1)
-    hist_enhanced = hist_enhanced.float() / hist_enhanced.sum()
-    hist_original = hist_original.float() / hist_original.sum()
-    return torch.sum((hist_enhanced - hist_original) ** 2)
+    # 假设图像是1通道
+    batch_size, channels, height, width = enhanced_y.size()
+
+    # 使用torch.linspace来生成直方图的bin边界
+    bins = torch.linspace(0, 1, steps=num_bins + 1).to(enhanced_y.device)  # [num_bins+1]
+
+    # 计算增强图像和原始图像的归一化累积分布
+    enhanced_y_flat = enhanced_y.view(batch_size, -1)  # [batch_size, channels * height * width]
+    original_y_flat = original_y.view(batch_size, -1)
+
+    # 使用每个bin的下边界来模拟直方图
+    enhanced_hist = torch.bucketize(enhanced_y_flat, bins) - 1  # 找到每个像素的bin索引
+    original_hist = torch.bucketize(original_y_flat, bins) - 1
+
+    # 计算每个bin中像素的频数，模拟直方图
+    hist_enhanced = torch.zeros(batch_size, num_bins, device=enhanced_y.device)
+    hist_original = torch.zeros(batch_size, num_bins, device=original_y.device)
+
+    # 计算每个bin的频数
+    for i in range(num_bins):
+        hist_enhanced[:, i] = (enhanced_hist == i).float().sum(dim=1)
+        hist_original[:, i] = (original_hist == i).float().sum(dim=1)
+
+    # 归一化每个直方图
+    hist_enhanced /= hist_enhanced.sum(dim=1, keepdim=True)
+    hist_original /= hist_original.sum(dim=1, keepdim=True)
+
+    # 计算L2损失
+    loss = F.mse_loss(hist_enhanced, hist_original)
+
+    return loss
 
 # 对比损失函数
 def contrast_loss(enhanced_y, original_y):
@@ -75,10 +101,10 @@ def gradient(input):
 
 
 
-# Example usage
-enhanced_y = torch.randn(1, 1, 256, 256)  # Example tensor
-original_y = torch.randn(1, 1, 256, 256)  # Example tensor
-
-criterion = YChannelEnhancementLoss()
-loss = criterion(enhanced_y, original_y)
-print(loss)
+# # Example usage
+# enhanced_y = torch.randn(1, 1, 256, 256)  # Example tensor
+# original_y = torch.randn(1, 1, 256, 256)  # Example tensor
+#
+# criterion = YChannelEnhancementLoss()
+# loss = criterion(enhanced_y, original_y)
+# print(loss)

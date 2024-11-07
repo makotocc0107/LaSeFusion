@@ -10,7 +10,8 @@ from torch.utils.data import DataLoader
 from dataloader import MSRS_data
 from tqdm import tqdm
 
-from models.fusion_network import EdgeFusion, clamp, YCrCb2RGB
+from models.network_remake import LaSeFusion
+from models.utlis import clamp, RGB2YCrCb, YCrCb2RGB
 
 def init_seeds(seed=0):
     # Initialize random number generator (RNG) seeds https://pytorch.org/docs/stable/notes/randomness.html
@@ -26,7 +27,7 @@ def init_seeds(seed=0):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="LaSeFusion")
-    parser.add_argument('--dataset_path', metavar='DIR', default='test_data/MSRS',
+    parser.add_argument('--dataset_path', metavar='DIR', default='test_data/msrs_train',
                         help='path to dataset (default: imagenet)')  # 测试数据存放位置
     parser.add_argument('-a', '--arch', metavar='ARCH', default='fusion_test',
                         choices=['fusion_train', 'fusion_test'])
@@ -51,7 +52,7 @@ if __name__ == '__main__':
         os.makedirs(args.save_path)
 
     if args.arch == 'fusion_test':
-        model = EdgeFusion()
+        model = LaSeFusion()
         model = model.cuda()
         model.load_state_dict(torch.load(args.train_models))
 
