@@ -42,61 +42,78 @@ class UpSample(nn.Module):
 
 
 # Y通道光照增强
-class Y_Channel_Ehancement(nn.Module):
+class Y_Channel_Enhancement(nn.Module):
     def __init__(self):
-        super(Y_Channel_Ehancement, self).__init__()
+        super(Y_Channel_Enhancement, self).__init__()
         # Encoder
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
+        self.enc_conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
+        self.enc_conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.enc_pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.enc_conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.enc_conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.enc_pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
 
         # Decoder
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 1, kernel_size=3, padding=1),
-            nn.Sigmoid()  # 使用 Sigmoid 函数将输出限制在 0 到 1 之间
-        )
+        self.dec_upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.dec_conv1 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+
+        self.dec_upconv2 = nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.dec_conv2 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
+
+        self.final_conv = nn.Conv2d(32, 1, kernel_size=3, padding=1)  # 输出通道数为32
+
+        # Activation functions
+        self.relu = nn.ReLU(inplace=False)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         # Encoder
-        x = self.encoder(x)
-        # Decoder
-        x = self.decoder(x)
-        return x
+        x1 = self.relu(self.enc_conv1(x))
+        x2 = self.relu(self.enc_conv2(x1))
+        x3 = self.enc_pool1(x2)
+
+        x4 = self.relu(self.enc_conv3(x3))
+        x5 = self.relu(self.enc_conv4(x4))
+        x6 = self.enc_pool2(x5)
+
+        # Decoder with skip connections
+        x7 = self.relu(self.dec_upconv1(x6))
+        x7 = torch.cat((x7, x4), dim=1)
+
+        x8 = self.relu(self.dec_conv1(x7))
+        x9 = self.relu(self.dec_upconv2(x8))
+        x9 = torch.cat((x9, x2), dim=1)
+
+        x10 = self.relu(self.dec_conv2(x9))
+
+        output = self.sigmoid(self.final_conv(x10))  # 仍然应用sigmoid，输出通道数为32
+
+        return output
 
 
-# 边缘检测模块
 class EdgeGuidedBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(EdgeGuidedBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
         self.edge_conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=False)
 
     @staticmethod
     def sobel_edge_detection(image):
         # 定义 Sobel 滤波器
         sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32,
-                               device=image.device).unsqueeze(0).unsqueeze(0)
+                               device=image.device).unsqueeze(0).unsqueeze(0)  # [1, 1, 3, 3]
         sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32,
-                               device=image.device).unsqueeze(0).unsqueeze(0)
+                               device=image.device).unsqueeze(0).unsqueeze(0)  # [1, 1, 3, 3]
 
-        edges_x = F.conv2d(image, sobel_x, padding=1)
-        edges_y = F.conv2d(image, sobel_y, padding=1)
+        # 扩展 Sobel 滤波器为 [32, 1, 3, 3]，使其适应每个通道
+        sobel_x = sobel_x.repeat(image.size(1), 1, 1, 1)  # 重复 Sobel 滤波器的第一个维度
+        sobel_y = sobel_y.repeat(image.size(1), 1, 1, 1)
+
+        # 对每个通道进行 Sobel 卷积
+        edges_x = F.conv2d(image, sobel_x, padding=1, groups=image.size(1))  # groups=image.size(1) 处理多通道
+        edges_y = F.conv2d(image, sobel_y, padding=1, groups=image.size(1))
         edges = torch.sqrt(edges_x ** 2 + edges_y ** 2)
         edges = edges / (torch.max(edges) + 1e-6)  # 归一化到 [0, 1]
         return edges
@@ -104,62 +121,25 @@ class EdgeGuidedBlock(nn.Module):
     def forward(self, x):
         # 原始图像分支
         x1 = self.conv(x)
+
         # 边缘信息分支
         edge = self.sobel_edge_detection(x)
-        edge = self.edge_conv(edge)
-        # 组合分支
-        x2 = self.conv(x * edge)
-        # 改进融合策略
-        x = x1 + x2 + self.relu(edge)  # 添加边缘信息的直接贡献
-        x = self.relu(x)
-        return x
+        edge = self.edge_conv(edge)  # 处理边缘信息
 
-# class EdgeGuidedBlock(nn.Module):
-#     def __init__(self, in_channels, out_channels):
-#         super(EdgeGuidedBlock, self).__init__()
-#         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-#         self.edge_conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-#         self.relu = nn.ReLU(inplace=True)
-#
-#     @staticmethod
-#     def sobel_edge_detection(image):
-#         # 定义 Sobel 滤波器
-#         sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32,
-#                                device=image.device).unsqueeze(0).unsqueeze(0)
-#         sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32,
-#                                device=image.device).unsqueeze(0).unsqueeze(0)
-#
-#         # 对每个通道分别进行边缘检测
-#         edges = []
-#         for c in range(image.size(1)):
-#             edge_x = F.conv2d(image[:, c:c + 1, :, :], sobel_x, padding=1)
-#             edge_y = F.conv2d(image[:, c:c + 1, :, :], sobel_y, padding=1)
-#             edge = torch.sqrt(edge_x ** 2 + edge_y ** 2)
-#             edges.append(edge)
-#
-#         # 将所有通道的边缘检测结果堆叠在一起
-#         edges = torch.cat(edges, dim=1)
-#         edges = edges / torch.max(edges)  # 归一化到 [0, 1] 范围
-#         return edges
-#
-#     def forward(self, x):
-#         # 原始图像分支
-#         x1 = self.conv(x)
-#         # 边缘信息分支
-#         edge = self.sobel_edge_detection(x)
-#         edge = self.edge_conv(edge)
-#         # 组合分支
-#         x2 = self.conv(x * edge)
-#         x = x1 + x2
-#         x = self.relu(x)
-#         return x
+        # 组合分支，使用边缘引导的信息
+        x2 = self.conv(x * edge)  # 将图像和边缘信息相乘进行处理
+
+        # 改进融合策略，加入边缘信息的贡献
+        x = x1 + x2 + self.relu(edge)  # 添加边缘信息的直接贡献
+        x = self.relu(x)  # 激活融合后的结果
+        return x
 
 
 class EdgeUpSample(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(EdgeUpSample, self).__init__()
-        self.edge_guided_block = EdgeGuidedBlock(in_channels, out_channels)
-        self.upsample = nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
+        self.upsample = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
+        self.edge_guided_block = EdgeGuidedBlock(out_channels, out_channels)
 
     def forward(self, x):
         # 先进行上采样
@@ -182,3 +162,66 @@ class DownSample(nn.Module):
         x = self.pool(x)
         return x
 
+
+class LaSeFusion(nn.Module):
+    def __init__(self):
+        super(LaSeFusion, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=8, kernel_size=1, stride=1, padding=0)
+        self.up1 = UpSample(in_channels=8, out_channels=16)
+        self.up2 = UpSample(in_channels=16, out_channels=32)
+        self.up3 = UpSample(in_channels=32, out_channels=64)
+
+        self.simple_attention = SimpleAttention()
+
+        self.y_channel_enhance = Y_Channel_Enhancement()
+        self.edge_up1 = EdgeUpSample(in_channels=1, out_channels=32)
+        self.edge_up2 = EdgeUpSample(in_channels=64, out_channels=64)
+        self.edge_up3 = EdgeUpSample(in_channels=128, out_channels=128)
+
+        self.down1 = DownSample(in_channels=256, out_channels=128)
+        self.down2 = DownSample(in_channels=128, out_channels=64)
+        self.down3 = DownSample(in_channels=64, out_channels=32)
+
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=16, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, vis_y_image, inf_image):
+        activate = nn.LeakyReLU()
+        vis_y_image_enhanced = vis_y_image
+
+        # 可见光通道特征提取
+        vis_y_image = activate(self.conv1(vis_y_image))
+        vis_y_image_up1 = self.up1(vis_y_image)
+        vis_y_image_up2 = self.up2(vis_y_image_up1)
+        vis_y_image_up3 = self.up3(vis_y_image_up2)
+
+        # 红外光通道特征提取
+        inf_image = activate(self.conv1(inf_image))
+        inf_image_up1 = self.up1(inf_image)
+        inf_image_up2 = self.up2(inf_image_up1)
+        inf_image_up3 = self.up3(inf_image_up2)
+
+        # 初步融合 添加注意力机制
+        initial_fuse1 = torch.cat([vis_y_image_up1, inf_image_up1], dim=1)
+        initial_fuse1 = self.simple_attention(initial_fuse1)
+        initial_fuse2 = torch.cat([vis_y_image_up2, inf_image_up2], dim=1)
+        initial_fuse2 = self.simple_attention(initial_fuse2)
+        initial_fuse3 = torch.cat([vis_y_image_up3, inf_image_up3], dim=1)
+        initial_fuse3 = self.simple_attention(initial_fuse3)
+
+        # 可见光另一分支增强并融合
+        vis_y_image_enhanced = self.y_channel_enhance(vis_y_image_enhanced)
+        vis_y_image_enhanced_up1 = self.edge_up1(vis_y_image_enhanced)
+        second_cat1 = torch.cat([vis_y_image_enhanced_up1, initial_fuse1], dim=1)
+        vis_y_image_enhanced_up2 = self.edge_up2(second_cat1)
+        second_cat2 = torch.cat([vis_y_image_enhanced_up2, initial_fuse2], dim=1)
+        vis_y_image_enhanced_up3 = self.edge_up3(second_cat2)
+        second_cat3 = torch.cat([vis_y_image_enhanced_up3, initial_fuse3], dim=1)
+
+        fused_image = self.down1(second_cat3)
+        fused_image = self.down2(fused_image)
+        fused_image = self.down3(fused_image)
+        fused_image = activate(self.conv2(fused_image))
+        fused_image = nn.Tanh()(self.conv3(fused_image)) / 2 + 0.5
+
+        return fused_image, vis_y_image_enhanced

@@ -97,6 +97,7 @@ class UpSample(nn.Module):
         x = self.conv_up(x)
         return x
 
+
 class AttentionUpSample(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(AttentionUpSample, self).__init__()
@@ -111,6 +112,7 @@ class AttentionUpSample(nn.Module):
         x = self.conv_up(x)
         x = self.attetion(x)
         return x
+
 
 class ConvBnReLu(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, pad=1):
@@ -252,7 +254,6 @@ class EdgeFusion(nn.Module):
         self.re_down2 = DownSample(in_channels=128, out_channels=16)
         self.re_down1 = DownSample(in_channels=64, out_channels=8)
 
-
         self.Y_enhancement = Y_Channel_Ehancement()
 
     def forward(self, vis_y_image, inf_image):
@@ -294,7 +295,6 @@ class EdgeFusion(nn.Module):
         final_fused_image = self.conv2(final_fuse1_d)
 
         return fused_image_edge, vis_y_image_e, final_fused_image
-
 
 
 # class Decoder(nn.Module):
