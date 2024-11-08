@@ -1,7 +1,7 @@
-# 开发时间：2024/6/26 14:16
 import argparse
 import os
 import random
+import logging
 
 import torch
 import torch.nn.functional as F
@@ -18,8 +18,6 @@ from models.network_remake import LaSeFusion
 from models.utlis import clamp, RGB2YCrCb, YCrCb2RGB
 
 def init_seeds(seed=0):
-    # Initialize random number generator (RNG) seeds https://pytorch.org/docs/stable/notes/randomness.html
-    # cudnn seed 0 settings are slower and more reproducible, else faster and less reproducible
     import torch.backends.cudnn as cudnn
     random.seed(seed)
     np.random.seed(seed)
@@ -27,6 +25,18 @@ def init_seeds(seed=0):
     if args.cuda:
         torch.cuda.manual_seed(seed)
     cudnn.benchmark, cudnn.deterministic = (False, True) if seed == 0 else (True, False)
+
+def setup_logger(log_path):
+    """Setup logger to save console output to a file."""
+    log_dir = os.path.dirname(log_path)
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)  # 创建保存日志文件的文件夹
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="LaSeFusion")
@@ -41,12 +51,12 @@ if __name__ == '__main__':
                         help='number of total epochs to run')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
-    parser.add_argument('-b', '--batch_size', default=2, type=int,
+    parser.add_argument('-b', '--batch_size', default=16, type=int,
                         metavar='N',
                         help='mini-batch size (default: 256), this is the total '
                              'batch size of all GPUs on the current node when '
                              'using Data Parallel or Distributed Data Parallel')
-    parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
+    parser.add_argument('--lr', '--learning-rate', default=0.0001, type=float,
                         metavar='LR', help='initial learning rate', dest='lr')
     parser.add_argument('--image_size', default=64, type=int,
                         metavar='N', help='image size of input')
@@ -60,6 +70,7 @@ if __name__ == '__main__':
                         help='use GPU or not.')
 
     args = parser.parse_args()
+    setup_logger(os.path.join(args.save_path, 'train_log.txt'))
 
     init_seeds(args.seed)
 
@@ -67,7 +78,6 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_datasets, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
                               pin_memory=True)
 
-    # tensorboard可视化
     writer = SummaryWriter('./logs_train')
 
     if not os.path.exists(args.save_path):
@@ -78,10 +88,9 @@ if __name__ == '__main__':
         if torch.cuda.is_available():
             model = model.cuda()
 
-        # 设置优化器
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        best_loss = float('inf')  # Initialize best loss to a very high value
 
-        # 过半epoch学习率变化
         for epoch in range(args.start_epoch, args.epochs):
             if epoch < args.epochs // 2:
                 lr = args.lr
@@ -92,6 +101,7 @@ if __name__ == '__main__':
                 param_group['lr'] = lr
 
             model.train()
+            epoch_loss = 0
             train_tqdm = tqdm(train_loader, total=len(train_loader))
             for vis_y_image, _, _, inf_image, _, _ in train_tqdm:
                 vis_y_image = vis_y_image.cuda()
@@ -99,16 +109,9 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
                 fused_image, vis_y_image_enhanced = model(vis_y_image, inf_image)
 
-                # 强制约束范围在[0,1], 以免越界值使得最终生成的图像产生异常斑点
                 final_fused_image = clamp(fused_image)
-
-                # 强度损失
                 loss_aux = F.l1_loss(fused_image, torch.max(vis_y_image, inf_image))
-
-                # 纹理损失
                 gradient_loss = F.l1_loss(gradient(fused_image), torch.max(gradient(vis_y_image), gradient(inf_image)))
-
-                # 光照重构损失
                 loss_rec_y = YChannelEnhancementLoss()
                 loss_rec = loss_rec_y(vis_y_image_enhanced, vis_y_image)
 
@@ -119,20 +122,22 @@ if __name__ == '__main__':
                                        loss_gradient=t2 * gradient_loss.item(),
                                        loss_rec=loss_rec.item(), loss_total=loss.item())
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                epoch_loss += loss.item()
 
                 writer.add_scalar("train_loss", loss.item(), epoch)
 
+            epoch_loss /= len(train_loader)
+            logging.info(f"Epoch {epoch}/{args.epochs} - Avg Loss: {epoch_loss:.4f}")
+
+            # Save model at each epoch
             torch.save(model.state_dict(), f'{args.save_path}/model_epoch_{epoch}.pth')
+
+            # Save the best model
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+                torch.save(model.state_dict(), f'{args.save_path}/best_model.pth')
+                logging.info("Best model saved with loss: {:.4f}".format(best_loss))
+
             print("\n 模型保存完毕")
-
-
-
-
-
-
-
-
-
-
-

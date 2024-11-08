@@ -27,12 +27,12 @@ def init_seeds(seed=0):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="LaSeFusion")
-    parser.add_argument('--dataset_path', metavar='DIR', default='test_data/msrs_train',
+    parser.add_argument('--dataset_path', metavar='DIR', default='test_data/msrs_test',
                         help='path to dataset (default: imagenet)')  # 测试数据存放位置
     parser.add_argument('-a', '--arch', metavar='ARCH', default='fusion_test',
                         choices=['fusion_train', 'fusion_test'])
     parser.add_argument('--save_path', default='results/fusion')  # 融合结果存放位置
-    parser.add_argument('-j', '--workers', default=1, type=int, metavar='N',
+    parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
     parser.add_argument('--train_models', default='train_model/model_epoch_0.pth',
                         help='use cls pre-trained model')
@@ -71,7 +71,3 @@ if __name__ == '__main__':
                 rgb_fused_image = YCrCb2RGB(fused_image[0], vis_cb_image[0], vis_cr_image[0])
                 rgb_fused_image = transforms.ToPILImage()(rgb_fused_image)
                 rgb_fused_image.save(f'{args.save_path}/{name[0]}')
-
-
-
-
