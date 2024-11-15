@@ -4,6 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 import cv2
 import numpy as np
+from timm.models.layers import CondConv2d
 
 
 # 注意力机制，用于首次两个信息融合交互
@@ -24,20 +25,54 @@ class SimpleAttention(torch.nn.Module):
         return x * self.act(y)
 
 
-# 普通上采样模块
-class UpSample(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(UpSample, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        self.up_sample = nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
+class MultiScaleConv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, dropout_prob=0.5):
+        super(MultiScaleConv, self).__init__()
+        # 设置卷积层的卷积核大小（可定制）
+        self.kernel_size = kernel_size
+        self.padding = kernel_size // 2  # 保证输入输出尺寸一致
+        # 第一层卷积 + 批量归一化
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=self.kernel_size, stride=1, padding=self.padding)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        # 第二层卷积 + 批量归一化
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=self.kernel_size, stride=1, padding=self.padding)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        # Dropout层
+        self.dropout = nn.Dropout(dropout_prob)
+        # 残差连接层（1x1 卷积）
+        self.conv_res = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
+        # 残差连接
+        residual = self.conv_res(x)
+        # 第一层卷积 + 批量归一化 + 激活
         x = self.conv1(x)
+        x = self.bn1(x)
         x = F.relu(x)
+        # 第二层卷积 + 批量归一化 + 激活
         x = self.conv2(x)
+        x = self.bn2(x)
         x = F.relu(x)
-        x = self.up_sample(x)
+        # Dropout
+        x = self.dropout(x)
+        # 残差连接加法
+        x += residual
+        return x
+
+
+class DynamicConv(nn.Module):
+    """Dynamic Conv layer"""
+
+    def __init__(self, in_features, out_features, kernel_size=1, stride=1, padding='', dilation=1, groups=1, bias=False, num_experts=4):
+        super().__init__()
+        print('+++', num_experts)
+        self.routing = nn.Linear(in_features, num_experts)
+        self.cond_conv = CondConv2d(in_features, out_features, kernel_size, stride, padding, dilation, groups, bias, num_experts)
+
+    def forward(self, x):
+        pooled_inputs = F.adaptive_avg_pool2d(x, 1).flatten(1)  # CondConv routing
+        routing_weights = torch.sigmoid(self.routing(pooled_inputs))
+        x = self.cond_conv(x, routing_weights)
         return x
 
 
@@ -135,55 +170,52 @@ class EdgeGuidedBlock(nn.Module):
         return x
 
 
-class EdgeUpSample(nn.Module):
+class EdgeConv(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super(EdgeUpSample, self).__init__()
-        self.upsample = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
+        super(EdgeConv, self).__init__()
+        self.DynamicConv = DynamicConv(in_channels, out_channels)
         self.edge_guided_block = EdgeGuidedBlock(out_channels, out_channels)
 
     def forward(self, x):
-        # 先进行上采样
-        x = self.upsample(x)
-        # 再进行边缘引导
+        x = self.DynamicConv(x)
         x = self.edge_guided_block(x)
         return x
 
-
-class DownSample(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(DownSample, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+class reflect_conv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, pad=1):
+        super(reflect_conv, self).__init__()
+        self.conv = nn.Sequential(
+            nn.ReflectionPad2d(pad),
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride,
+                      padding=0)
+        )
 
     def forward(self, x):
-        # 通过卷积层提取特征
-        x = self.conv(x)
-        # 最大池化进行下采样
-        x = self.pool(x)
-        return x
-
+        activate = nn.LeakyReLU()
+        out = activate(self.conv(x))
+        return out
 
 class LaSeFusion(nn.Module):
     def __init__(self):
         super(LaSeFusion, self).__init__()
         self.conv1 = nn.Conv2d(in_channels=1, out_channels=8, kernel_size=1, stride=1, padding=0)
-        self.up1 = UpSample(in_channels=8, out_channels=16)
-        self.up2 = UpSample(in_channels=16, out_channels=32)
-        self.up3 = UpSample(in_channels=32, out_channels=64)
+        self.MultiConv1 = MultiScaleConv(in_channels=8, out_channels=16, kernel_size=3)
+        self.MultiConv2 = MultiScaleConv(in_channels=16, out_channels=32, kernel_size=5)
+        self.MultiConv3 = MultiScaleConv(in_channels=32, out_channels=64, kernel_size=7)
 
         self.simple_attention = SimpleAttention()
 
         self.y_channel_enhance = Y_Channel_Enhancement()
-        self.edge_up1 = EdgeUpSample(in_channels=1, out_channels=32)
-        self.edge_up2 = EdgeUpSample(in_channels=64, out_channels=64)
-        self.edge_up3 = EdgeUpSample(in_channels=128, out_channels=128)
+        self.edge_conv1 = EdgeConv(in_channels=1, out_channels=32)
+        self.edge_conv2 = EdgeConv(in_channels=64, out_channels=64)
+        self.edge_conv3 = EdgeConv(in_channels=128, out_channels=128)
 
-        self.down1 = DownSample(in_channels=256, out_channels=128)
-        self.down2 = DownSample(in_channels=128, out_channels=64)
-        self.down3 = DownSample(in_channels=64, out_channels=32)
-
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=16, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
+        self.reconstruction = nn.Sequential(
+            reflect_conv(in_channels=256, out_channels=128),
+            reflect_conv(in_channels=128, out_channels=64),
+            reflect_conv(in_channels=64, out_channels=32),
+            reflect_conv(in_channels=32, out_channels=1)
+        )
 
     def forward(self, vis_y_image, inf_image):
         activate = nn.LeakyReLU()
@@ -191,37 +223,34 @@ class LaSeFusion(nn.Module):
 
         # 可见光通道特征提取
         vis_y_image = activate(self.conv1(vis_y_image))
-        vis_y_image_up1 = self.up1(vis_y_image)
-        vis_y_image_up2 = self.up2(vis_y_image_up1)
-        vis_y_image_up3 = self.up3(vis_y_image_up2)
+        vis_y_image_1 = self.MultiConv1(vis_y_image)
+        vis_y_image_2 = self.MultiConv2(vis_y_image_1)
+        vis_y_image_3 = self.MultiConv3(vis_y_image_2)
 
         # 红外光通道特征提取
         inf_image = activate(self.conv1(inf_image))
-        inf_image_up1 = self.up1(inf_image)
-        inf_image_up2 = self.up2(inf_image_up1)
-        inf_image_up3 = self.up3(inf_image_up2)
+        inf_image_1 = self.MultiConv1(inf_image)
+        inf_image_2 = self.MultiConv2(inf_image_1)
+        inf_image_3 = self.MultiConv3(inf_image_2)
 
         # 初步融合 添加注意力机制
-        initial_fuse1 = torch.cat([vis_y_image_up1, inf_image_up1], dim=1)
+        initial_fuse1 = torch.cat([vis_y_image_1, inf_image_1], dim=1)
         initial_fuse1 = self.simple_attention(initial_fuse1)
-        initial_fuse2 = torch.cat([vis_y_image_up2, inf_image_up2], dim=1)
+        initial_fuse2 = torch.cat([vis_y_image_2, inf_image_2], dim=1)
         initial_fuse2 = self.simple_attention(initial_fuse2)
-        initial_fuse3 = torch.cat([vis_y_image_up3, inf_image_up3], dim=1)
+        initial_fuse3 = torch.cat([vis_y_image_3, inf_image_3], dim=1)
         initial_fuse3 = self.simple_attention(initial_fuse3)
 
         # 可见光另一分支增强并融合
         vis_y_image_enhanced = self.y_channel_enhance(vis_y_image_enhanced)
-        vis_y_image_enhanced_up1 = self.edge_up1(vis_y_image_enhanced)
-        second_cat1 = torch.cat([vis_y_image_enhanced_up1, initial_fuse1], dim=1)
-        vis_y_image_enhanced_up2 = self.edge_up2(second_cat1)
-        second_cat2 = torch.cat([vis_y_image_enhanced_up2, initial_fuse2], dim=1)
-        vis_y_image_enhanced_up3 = self.edge_up3(second_cat2)
-        second_cat3 = torch.cat([vis_y_image_enhanced_up3, initial_fuse3], dim=1)
+        vis_y_image_enhanced_1 = self.edge_conv1(vis_y_image_enhanced)
+        second_cat1 = torch.cat([vis_y_image_enhanced_1, initial_fuse1], dim=1)
+        vis_y_image_enhanced_2 = self.edge_conv2(second_cat1)
+        second_cat2 = torch.cat([vis_y_image_enhanced_2, initial_fuse2], dim=1)
+        vis_y_image_enhanced_3 = self.edge_conv3(second_cat2)
+        second_cat3 = torch.cat([vis_y_image_enhanced_3, initial_fuse3], dim=1)
 
-        fused_image = self.down1(second_cat3)
-        fused_image = self.down2(fused_image)
-        fused_image = self.down3(fused_image)
-        fused_image = activate(self.conv2(fused_image))
-        fused_image = nn.Tanh()(self.conv3(fused_image)) / 2 + 0.5
+        fused_image = self.reconstruction(second_cat3)
+        fused_image = nn.Tanh()(fused_image) / 2 + 0.5
 
         return fused_image, vis_y_image_enhanced
