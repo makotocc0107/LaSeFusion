@@ -39,6 +39,8 @@ def setup_logger(log_path):
 
 
 if __name__ == '__main__':
+    torch.autograd.set_detect_anomaly(True)
+
     parser = argparse.ArgumentParser(description="LaSeFusion")
     parser.add_argument('--dataset_path', metavar='DIR', default='datasets/msrs_train',
                         help='path to dataset (default: imagenet)')
@@ -47,20 +49,20 @@ if __name__ == '__main__':
     parser.add_argument('--save_path', default='train_model')  # 模型存储路径
     parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
-    parser.add_argument('--epochs', default=30, type=int, metavar='N',
+    parser.add_argument('--epochs', default=100, type=int, metavar='N',
                         help='number of total epochs to run')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
-    parser.add_argument('-b', '--batch_size', default=16, type=int,
+    parser.add_argument('-b', '--batch_size', default=128, type=int,
                         metavar='N',
                         help='mini-batch size (default: 256), this is the total '
                              'batch size of all GPUs on the current node when '
                              'using Data Parallel or Distributed Data Parallel')
-    parser.add_argument('--lr', '--learning-rate', default=0.0001, type=float,
+    parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                         metavar='LR', help='initial learning rate', dest='lr')
-    parser.add_argument('--image_size', default=64, type=int,
+    parser.add_argument('--image_size', default=128, type=int,
                         metavar='N', help='image size of input')
-    parser.add_argument('--loss_weight', default='[3, 7, 10]', type=str,
+    parser.add_argument('--loss_weight', default='[70, 20, 10]', type=str,
                         metavar='N', help='loss weight')
     parser.add_argument('--cls_pretrained', default='pretrained/best_cls.pth',
                         help='use cls pre-trained model')
@@ -121,6 +123,7 @@ if __name__ == '__main__':
                 train_tqdm.set_postfix(epoch=epoch, loss_aux=t1 * loss_aux.item(),
                                        loss_gradient=t2 * gradient_loss.item(),
                                        loss_rec=loss_rec.item(), loss_total=loss.item())
+
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()

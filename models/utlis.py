@@ -42,14 +42,23 @@ def YCrCb2RGB(Y, Cb, Cr):
     :param Cr:
     :return:
     """
+    # 确保维度一致
+    if Y.dim() == 4:  # 如果是四维张量 (B, C, H, W)
+        Y = Y[0]  # 选择第一个元素
+    if Cb.dim() == 4:
+        Cb = Cb[0]
+    if Cr.dim() == 4:
+        Cr = Cr[0]
+
     ycrcb = torch.cat([Y, Cr, Cb], dim=0)
-    C, W, H = ycrcb.shape
+    C, H, W = ycrcb.shape  # 现在的形状应该是 (C, H, W)
     im_flat = ycrcb.reshape(3, -1).transpose(0, 1)
     mat = torch.tensor(
         [[1.0, 1.0, 1.0], [1.403, -0.714, 0.0], [0.0, -0.344, 1.773]]
     ).to(Y.device)
     bias = torch.tensor([0.0 / 255, -0.5, -0.5]).to(Y.device)
     temp = (im_flat + bias).mm(mat)
-    out = temp.transpose(0, 1).reshape(C, W, H)
+    out = temp.transpose(0, 1).reshape(C, H, W)
     out = clamp(out)
     return out
+

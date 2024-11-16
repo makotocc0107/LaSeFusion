@@ -61,7 +61,6 @@ class MultiScaleConv(nn.Module):
 
 
 class DynamicConv(nn.Module):
-    """Dynamic Conv layer"""
 
     def __init__(self, in_features, out_features, kernel_size=1, stride=1, padding='', dilation=1, groups=1, bias=False, num_experts=4):
         super().__init__()
@@ -132,7 +131,7 @@ class EdgeGuidedBlock(nn.Module):
         super(EdgeGuidedBlock, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
         self.edge_conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        self.relu = nn.ReLU(inplace=False)
+        self.relu = nn.ReLU(inplace=False)  # 关闭 inplace，避免原地操作修改输入张量
 
     @staticmethod
     def sobel_edge_detection(image):
@@ -142,15 +141,17 @@ class EdgeGuidedBlock(nn.Module):
         sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32,
                                device=image.device).unsqueeze(0).unsqueeze(0)  # [1, 1, 3, 3]
 
-        # 扩展 Sobel 滤波器为 [32, 1, 3, 3]，使其适应每个通道
+        # 扩展 Sobel 滤波器为 [num_channels, 1, 3, 3]，使其适应每个通道
         sobel_x = sobel_x.repeat(image.size(1), 1, 1, 1)  # 重复 Sobel 滤波器的第一个维度
         sobel_y = sobel_y.repeat(image.size(1), 1, 1, 1)
 
         # 对每个通道进行 Sobel 卷积
         edges_x = F.conv2d(image, sobel_x, padding=1, groups=image.size(1))  # groups=image.size(1) 处理多通道
         edges_y = F.conv2d(image, sobel_y, padding=1, groups=image.size(1))
-        edges = torch.sqrt(edges_x ** 2 + edges_y ** 2)
-        edges = edges / (torch.max(edges) + 1e-6)  # 归一化到 [0, 1]
+
+        # 计算边缘强度，并加入小的平滑项防止负值
+        edges = torch.sqrt(torch.clamp(edges_x ** 2 + edges_y ** 2, min=1e-6))  # 防止负值
+        edges = edges / (torch.max(edges) + 1e-6)  # 归一化到 [0, 1]，防止除零
         return edges
 
     def forward(self, x):
@@ -168,6 +169,7 @@ class EdgeGuidedBlock(nn.Module):
         x = x1 + x2 + self.relu(edge)  # 添加边缘信息的直接贡献
         x = self.relu(x)  # 激活融合后的结果
         return x
+
 
 
 class EdgeConv(nn.Module):
@@ -253,4 +255,24 @@ class LaSeFusion(nn.Module):
         fused_image = self.reconstruction(second_cat3)
         fused_image = nn.Tanh()(fused_image) / 2 + 0.5
 
+        if torch.isnan(fused_image).any():
+            print("NaN detected in fused_image")
+        if torch.isinf(fused_image).any():
+            print("Inf detected in fused_image")
         return fused_image, vis_y_image_enhanced
+
+
+if __name__ == '__main__':
+    model = LaSeFusion()
+
+    # 随机生成测试数据
+    # 假设输入图像的尺寸为 (batch_size=1, channels=1, height=256, width=256)
+    vis_y_image = torch.randn(1, 1, 256, 256)  # 可见光图像
+    inf_image = torch.randn(1, 1, 256, 256)   # 红外图像
+
+    # 将这些图像传递给模型
+    fused_image, vis_y_image_enhanced = model(vis_y_image, inf_image)
+
+    # 打印输出的尺寸
+    print("Fused Image Shape: ", fused_image.shape)
+    print("Enhanced Visible Image Shape: ", vis_y_image_enhanced.shape)
