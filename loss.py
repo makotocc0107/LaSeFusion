@@ -71,7 +71,7 @@ class YChannelEnhancementLoss(nn.Module):
         smooth_loss = smoothness_loss(enhanced_y)
 
         # 通过加权平均组合损失
-        loss = l1_loss + 0.1 * hist_loss + 0.1 * cont_loss + 0.01 * smooth_loss
+        loss = 5 * l1_loss + 2 * hist_loss + 2 * cont_loss + 1 * smooth_loss
 
         return loss
 
