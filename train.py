@@ -49,7 +49,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_path', default='train_model')  # 模型存储路径
     parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
-    parser.add_argument('--epochs', default=100, type=int, metavar='N',
+    parser.add_argument('--epochs', default=200, type=int, metavar='N',
                         help='number of total epochs to run')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
@@ -122,7 +122,7 @@ if __name__ == '__main__':
 
                 train_tqdm.set_postfix(epoch=epoch, loss_aux=t1 * loss_aux.item(),
                                        loss_gradient=t2 * gradient_loss.item(),
-                                       loss_rec=loss_rec.item(), loss_total=loss.item())
+                                       loss_rec=t3 * loss_rec.item(), loss_total=loss.item())
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
