@@ -2,6 +2,8 @@ import argparse
 import os
 import random
 import logging
+import platform
+from platform import system
 
 import torch
 import torch.nn.functional as F
@@ -17,13 +19,30 @@ from loss import *
 from models.network_remake import LaSeFusion
 from models.utlis import clamp, RGB2YCrCb, YCrCb2RGB
 
+def select_device():
+    system = platform.system()
+    if system == 'Windows' or system == 'Linux':
+        if torch.cuda.is_available():
+            return "cuda"
+        else:
+            return "cpu"
+    elif system == 'Darwin':
+        if torch.backends.mps.is_available():
+            return "mps"
+        else:
+            return "cpu"
+    else:
+        return "cpu"
+
+
 def init_seeds(seed=0):
     import torch.backends.cudnn as cudnn
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if args.cuda:
-        torch.cuda.manual_seed(seed)
+    if platform.system() == "Windows" or platform.system() == "Linux":
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
     cudnn.benchmark, cudnn.deterministic = (False, True) if seed == 0 else (True, False)
 
 def setup_logger(log_path):
@@ -68,8 +87,8 @@ if __name__ == '__main__':
                         help='use cls pre-trained model')
     parser.add_argument('--seed', default=0, type=int,
                         help='seed for initializing training. ')
-    parser.add_argument('--cuda', default=True, type=bool,
-                        help='use GPU or not.')
+    parser.add_argument('--usd_gpu', default=1, type=int,
+                        help='use GPU for training. ')
 
     args = parser.parse_args()
     setup_logger(os.path.join(args.save_path, 'train_log.txt'))
@@ -87,8 +106,14 @@ if __name__ == '__main__':
 
     if args.arch == "fusion_train":
         model = LaSeFusion()
-        if torch.cuda.is_available():
-            model = model.cuda()
+        if args.usd_gpu == 1:
+            selected_device = select_device()
+            device = torch.device(selected_device)
+            print(f"Selected Device: {selected_device}")
+        else:
+            device = torch.device('cpu')
+            print(f"Selected Device: cpu")
+        model = model.to(device)
 
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
         best_loss = float('inf')  # Initialize best loss to a very high value
@@ -106,8 +131,8 @@ if __name__ == '__main__':
             epoch_loss = 0
             train_tqdm = tqdm(train_loader, total=len(train_loader))
             for vis_y_image, _, _, inf_image, _, _ in train_tqdm:
-                vis_y_image = vis_y_image.cuda()
-                inf_image = inf_image.cuda()
+                vis_y_image = vis_y_image.to(device)
+                inf_image = inf_image.to(device)
                 optimizer.zero_grad()
                 fused_image, vis_y_image_enhanced = model(vis_y_image, inf_image)
 
