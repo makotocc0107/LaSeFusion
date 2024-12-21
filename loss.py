@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from train import select_device
 
 def histogram_loss(enhanced_y, original_y, num_bins=256, smooth=1e-6):
     batch_size, channels, height, width = enhanced_y.size()
@@ -83,6 +84,8 @@ def gradient(input):
     :param input:
     :return:
     """
+    selected_device = select_device()
+    device = torch.device(selected_device)
 
     filter1 = nn.Conv2d(kernel_size=3, in_channels=1, out_channels=1, bias=False, padding=1, stride=1)
     filter2 = nn.Conv2d(kernel_size=3, in_channels=1, out_channels=1, bias=False, padding=1, stride=1)
@@ -90,12 +93,12 @@ def gradient(input):
         [-1., 0., 1.],
         [-2., 0., 2.],
         [-1., 0., 1.]
-    ]).reshape(1, 1, 3, 3).cuda()
+    ]).reshape(1, 1, 3, 3).to(device)
     filter2.weight.data = torch.tensor([
         [1., 2., 1.],
         [0., 0., 0.],
         [-1., -2., -1.]
-    ]).reshape(1, 1, 3, 3).cuda()
+    ]).reshape(1, 1, 3, 3).to(device)
 
     g1 = filter1(input)
     g2 = filter2(input)
